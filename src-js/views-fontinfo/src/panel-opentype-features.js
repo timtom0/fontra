@@ -515,7 +515,7 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     const header = html.div({ class: "ot-feature-header" }, [
       html.span({ class: "ot-feature-tag" }, [tag]),
       html.span({}, [arabicName || featureTitle(tag).split(" — ")[1] || ""]),
-      this._makeFeatureToggle(tag, selected),
+      this._makeFeatureToggle(tag),
     ]);
 
     const docURL = featureDocURL(tag);
@@ -554,15 +554,26 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     );
   }
 
-  _makeFeatureToggle(tag, selected) {
-    const isOn = this.previewFeatures[tag];
+  /**
+   * The eye toggle switches a feature on or off in the preview.
+   *
+   * A feature is on by default (that is how the font behaves), so we track
+   * only the features the user has explicitly turned *off*: `previewFeatures`
+   * maps tag -> on/off, defaulting to true.
+   */
+  _isFeatureEnabledInPreview(tag) {
+    return this.previewFeatures[tag] !== false;
+  }
+
+  _makeFeatureToggle(tag) {
+    const isOn = this._isFeatureEnabledInPreview(tag);
     return html.createDomElement("icon-button", {
       src: isOn ? "/tabler-icons/eye.svg" : "/tabler-icons/eye-closed.svg",
       title: `${isOn ? "Disable" : "Enable"} ${tag} in the preview`,
       onclick: async () => {
         this.previewFeatures[tag] = !isOn;
         await this.updatePreview();
-        this.setupUI();
+        await this.setupUI();
       },
     });
   }
@@ -1061,21 +1072,20 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     }
 
     el.appendChild(html.div({ class: "key" }, [`${glyphs.length} glyph(s):`]));
-    el.appendChild(
-      html.div({ class: "value" }, [
-        glyphs
-          .map((g) => {
-            const missing = !this.fontController.hasGlyph(g.glyphname);
-            return html.span(
-              {
-                class: missing ? "missing" : "",
-                title: missing ? "not in font" : g.glyphname,
-              },
-              [g.glyphname]
-            );
-          })
-          .flatMap((el, i) => (i ? [" ", el] : [el])),
-      ])
-    );
+
+    // NB: spread the flatMap result. Passing the array as a single child would
+    // make createDomElement append the array itself, which stringifies it.
+    const glyphChips = glyphs.flatMap((g, i) => {
+      const missing = !this.fontController.hasGlyph(g.glyphname);
+      const chip = html.span(
+        {
+          class: missing ? "missing" : "",
+          title: missing ? "not in font" : g.glyphname,
+        },
+        [g.glyphname]
+      );
+      return i ? [" ", chip] : [chip];
+    });
+    el.appendChild(html.div({ class: "value" }, glyphChips));
   }
 }
