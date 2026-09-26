@@ -111,4 +111,25 @@ describe("rule sample text", function () {
       );
     }
   });
+
+  it("reports the output glyph names", function () {
+    const single = firstRule(`feature ss01 { sub a by a.alt; } ss01;`);
+    assert.deepStrictEqual(describeRule(single, makeModel()).outputGlyphs, ["a.alt"]);
+
+    const decomp = firstRule(`feature ccmp { sub a by b c; } ccmp;`);
+    assert.deepStrictEqual(describeRule(decomp, makeModel()).outputGlyphs, ["b", "c"]);
+
+    // A deletion has no output
+    const deletion = firstRule(`feature x { sub a; } x;`);
+    assert.deepStrictEqual(describeRule(deletion, makeModel()).outputGlyphs, []);
+  });
+
+  it("expands a glyph class in the output to its members", function () {
+    const rule = firstRule(`feature ss01 { sub a by [A.alt B.alt]; } ss01;`);
+    const model = {
+      fontController: { glyphMap: { a: [0x61] } },
+      expandTokens: () => [{ members: ["A.alt", "B.alt"] }],
+    };
+    assert.deepStrictEqual(describeRule(rule, model).outputGlyphs, ["A.alt", "B.alt"]);
+  });
 });

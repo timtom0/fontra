@@ -19,6 +19,7 @@ import {
   getAllFeatureTags,
 } from "./feature-code-model.js";
 import { describeRule, stripIgnoreMark } from "./rule-sample.js";
+import { glyphRunToSVG, glyphToSVG } from "./rule-preview-svg.js";
 import { showDialogCannotEditReadOnly, BaseInfoPanel } from "./panel-base.js";
 
 const colors = {
@@ -196,25 +197,49 @@ ${themeColorCSS(colors, ":root")}
   text-decoration: underline wavy;
 }
 
-/* Per-rule sample */
+/* Per-rule sample: input on the left, output on the right, SVG so it stays
+   crisp and picks up the theme colour via currentColor. */
 
 .ot-rule-sample {
   display: flex;
-  gap: 0.6em;
+  gap: 0.8em;
   align-items: center;
   flex-wrap: wrap;
   grid-column: 1 / -1;
 }
 
-.ot-rule-sample-canvas {
+.ot-rule-sample > div {
+  display: grid;
+  justify-items: center;
+  gap: 0.15em;
+}
+
+.ot-preview-svg {
+  display: flex;
+  gap: 0.15em;
+  align-items: center;
+  justify-content: center;
+  /* Give both sides the same footprint so the arrow sits between them. */
+  min-height: 54px;
+  min-width: 150px;
   background-color: var(--preview-background);
-  border-radius: 0.25em;
   border: 0.5px solid var(--horizontal-rule-color);
-  display: block;
+  border-radius: 0.3em;
+  padding: 0.15em 0.3em;
+  color: var(--preview-glyph-fill);
+}
+
+.ot-preview-svg.ot-preview-multi {
+  min-width: 150px;
+}
+
+.ot-rule-sample-arrow {
+  opacity: 0.5;
+  font-size: 1.1em;
 }
 
 .ot-rule-sample-text {
-  font-size: 1.1em;
+  font-size: 1.05em;
   line-height: 1.3;
 }
 
@@ -222,6 +247,10 @@ ${themeColorCSS(colors, ":root")}
   font-size: 0.8em;
   color: var(--muted-foreground-color, #666);
   font-family: monospace;
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ot-feature-empty {
@@ -241,8 +270,9 @@ ${themeColorCSS(colors, ":root")}
 }
 `);
 
-const SAMPLE_FONT_SIZE = 34;
-const SAMPLE_ASPECT = { width: 220, height: 56 };
+// The box each preview is drawn into. The input side is wider (it holds a
+// run of glyphs); the output side holds up to four glyphs side by side.
+const SAMPLE_BOX = { width: 150, glyphWidth: 46, height: 54 };
 
 // Collapsed/expanded state per feature tag, kept across re-renders.
 const sectionOpenState = new Map();
@@ -311,7 +341,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     // calls this.setupUI() synchronously, so anything assigned afterwards would
     // be missing during that first render (and would then be re-rendered by the
     // async call below, duplicating the sections).
-    this.previewFeatures = {};
     this._glyphInstances = new Map();
     this._shaper = null;
     this._shaperProblem = null;
@@ -457,7 +486,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
             ? `${entries.length} rule${entries.length == 1 ? "" : "s"}`
             : "no rules",
         ]),
-        this._makeFeatureToggle(tag),
         ...(() => {
           const docURL = featureDocURL(tag);
           return docURL
@@ -508,22 +536,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     chevron?.classList.toggle("closed", !open);
   }
 
-  _isFeatureEnabledInPreview(tag) {
-    return this.previewFeatures[tag] !== false;
-  }
-
-  _makeFeatureToggle(tag) {
-    const isOn = this._isFeatureEnabledInPreview(tag);
-    return html.createDomElement("icon-button", {
-      src: isOn ? "/tabler-icons/eye.svg" : "/tabler-icons/eye-closed.svg",
-      title: `${isOn ? "Disable" : "Enable"} ${tag} in the samples`,
-      onclick: async () => {
-        this.previewFeatures[tag] = !isOn;
-        await this.setupUI();
-      },
-    });
-  }
-
   _makeRuleCard(tag, rule, lookup) {
     const info = FeatureCodeModel.classifyRule(rule);
     const inputs = this.model.expandTokens(rule.inputs);
@@ -553,20 +565,29 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
         i ? [" ", glyphElement(entry)] : [glyphElement(entry)]
       );
 
-    // The live sample for this rule.
-    const sampleCanvas = html.createDomElement("canvas", {
-      class: "ot-rule-sample-canvas",
-    });
+    // Two-sided preview: the input glyphs as they appear in running text
+    // (shaped, so ligatures collapse), and the output glyph on its own.
     const sample = describeRule(rule, this.model);
-    sampleCanvas._rule = sample;
-    sampleCanvas._tag = tag;
+
+    const inputHolder = html.div({
+      class: "ot-preview-svg ot-preview-input",
+      title: "Before: how the input renders in running text",
+    });
+    const outputHolder = html.div({
+      class: "ot-preview-svg ot-preview-output",
+      title: "After: the glyph this rule produces",
+    });
 
     const sampleRow = html.div({ class: "ot-rule-sample" }, [
-      sampleCanvas,
       html.div({}, [
+        inputHolder,
         html.div({ class: "ot-rule-sample-text" }, [sample.sampleText || "—"]),
+      ]),
+      html.div({ class: "ot-rule-sample-arrow" }, ["→"]),
+      html.div({}, [
+        outputHolder,
         html.div({ class: "ot-rule-sample-label" }, [
-          sample.outputLabel ? `→ ${sample.outputLabel}` : "→ (removed)",
+          sample.outputLabel || "(removed)",
         ]),
       ]),
     ]);
@@ -598,7 +619,7 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       sampleRow,
     ]);
 
-    this._sampleQueue.push(sampleCanvas);
+    this._sampleQueue.push({ inputHolder, outputHolder, sample, tag });
     return card;
   }
 
@@ -700,36 +721,85 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     if (!queue.length) {
       return;
     }
-    // Draw the first few immediately, the rest on the next frame so a font
-    // with many rules does not block the UI.
     const draw = async () => {
-      for (const canvas of queue) {
-        await this._drawSample(canvas);
+      for (const item of queue) {
+        await this._drawSample(item);
       }
     };
     draw();
   }
 
-  async _drawSample(canvas) {
-    const sample = canvas._rule;
-    const tag = canvas._tag;
+  async _drawSample({ inputHolder, outputHolder, sample }) {
     if (!sample) {
       return;
     }
-    if (!sample.sampleText) {
-      this._sizeCanvas(canvas, 0);
-      return;
-    }
-    if (this._shaperProblem) {
-      this._sizeCanvas(canvas, 0);
-      return;
+
+    // Left side: the input as it renders in running text, shaped through
+    // HarfBuzz so a ligature shows as the ligature glyph.
+    if (sample.sampleText && !this._shaperProblem) {
+      const glyphs = await this._shape(sample.sampleText);
+      this._setSVG(
+        inputHolder,
+        glyphRunToSVG(glyphs, this._glyphInstances, {
+          unitsPerEm: this.fontController.unitsPerEm,
+          boxWidth: SAMPLE_BOX.width,
+          boxHeight: SAMPLE_BOX.height,
+          color: "currentColor",
+        })
+      );
     }
 
-    const glyphs = await this._shape(sample.sampleText, tag);
-    this._drawGlyphs(canvas, glyphs);
+    // Right side: the output glyph on its own, fitted and centred.
+    const outputNames = (sample.outputGlyphs ?? []).filter((n) =>
+      this.fontController.hasGlyph(n)
+    );
+    if (outputNames.length) {
+      await this._ensureInstances(outputNames);
+      const nodes = [];
+      for (const name of outputNames.slice(0, 4)) {
+        nodes.push(
+          glyphToSVG(name, this._glyphInstances.get(name)?.instance, {
+            upem: this.fontController.unitsPerEm,
+            boxWidth: SAMPLE_BOX.glyphWidth,
+            boxHeight: SAMPLE_BOX.height,
+            color: "currentColor",
+          })
+        );
+      }
+      this._setSVG(outputHolder, nodes, { class: "ot-preview-multi" });
+    }
   }
 
-  async _shape(text, tag) {
+  _setSVG(holder, content, attributes = {}) {
+    if (!holder?.isConnected) {
+      return;
+    }
+    holder.innerHTML = "";
+    const items = Array.isArray(content) ? content : [content];
+    for (const item of items) {
+      holder.appendChild(item);
+    }
+    Object.assign(holder.dataset, attributes);
+  }
+
+  async _ensureInstances(glyphNames) {
+    for (const name of glyphNames) {
+      if (this._glyphInstances.has(name)) {
+        continue;
+      }
+      const instance = await this.fontController.getGlyphInstance(name, {});
+      if (instance) {
+        this._glyphInstances.set(name, {
+          xAdvance: instance.xAdvance,
+          anchors: instance.anchors,
+          propagatedAnchors: instance.propagatedAnchors,
+          instance,
+        });
+      }
+    }
+  }
+
+  async _shape(text) {
     const codePoints = [...text].map((c) => c.codePointAt(0));
     if (!codePoints.length || !this._shaper) {
       return [];
@@ -741,7 +811,7 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
 
     const options = {
       variations: {},
-      features: this._featureSettings(),
+      features: [],
       direction: guessDirectionFromCodePoints(codePoints),
       script: null,
       language: "dflt",
@@ -755,20 +825,8 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       if (!missing.length) {
         break;
       }
-      let loaded = false;
-      for (const name of missing) {
-        const instance = await this.fontController.getGlyphInstance(name, {});
-        if (instance) {
-          this._glyphInstances.set(name, {
-            xAdvance: instance.xAdvance,
-            anchors: instance.anchors,
-            propagatedAnchors: instance.propagatedAnchors,
-            instance,
-          });
-          loaded = true;
-        }
-      }
-      if (!loaded) {
+      await this._ensureInstances(missing);
+      if (!missing.every((n) => this._glyphInstances.has(n))) {
         break;
       }
       const objs = {};
@@ -778,73 +836,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       result = this._shaper.shape(codePoints, objs, options);
     }
     return result.glyphs;
-  }
-
-  _featureSettings() {
-    // Explicitly turn off any feature the user has disabled.
-    const settings = [];
-    for (const [t, on] of Object.entries(this.previewFeatures)) {
-      if (on === false) {
-        settings.push([t, 0]);
-      }
-    }
-    return settings;
-  }
-
-  _sizeCanvas(canvas, width) {
-    const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(width, 0);
-    canvas.width = Math.max(Math.round(w * dpr), 1);
-    canvas.height = Math.round(SAMPLE_ASPECT.height * dpr);
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${SAMPLE_ASPECT.height}px`;
-  }
-
-  _drawGlyphs(canvas, glyphs) {
-    if (!canvas.isConnected) {
-      return;
-    }
-    const dpr = window.devicePixelRatio || 1;
-    const unitsPerEm = this.fontController.unitsPerEm || 1000;
-    const scale = (SAMPLE_FONT_SIZE / unitsPerEm) * dpr;
-
-    let width = 0;
-    for (const g of glyphs) {
-      width += (g.xAdvance + (g.xOffset || 0)) * scale;
-    }
-    const padX = 6 * dpr;
-    this._sizeCanvas(canvas, Math.min(width + padX * 2, 400));
-
-    const context = canvas.getContext("2d");
-    const w = canvas.width;
-    const h = canvas.height;
-    context.clearRect(0, 0, w, h);
-    if (!glyphs.length) {
-      return;
-    }
-
-    const fill = getComputedStyle(canvas)
-      .getPropertyValue("--preview-glyph-fill")
-      .trim();
-    context.fillStyle = fill || "#111";
-
-    let x = padX;
-    const baseline = h - 8 * dpr;
-    for (const glyph of glyphs) {
-      const obj = this._glyphInstances.get(glyph.glyphname);
-      const path2d = obj?.instance?.flattenedPath2d;
-      if (path2d) {
-        context.save();
-        context.translate(
-          x + (glyph.xOffset || 0) * scale,
-          baseline - (glyph.yOffset || 0) * scale
-        );
-        context.scale(scale, -scale);
-        context.fill(path2d);
-        context.restore();
-      }
-      x += glyph.xAdvance * scale;
-    }
   }
 
   // ---------------------------------------------------------------------

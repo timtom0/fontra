@@ -197,6 +197,18 @@ export function describeRule(rule, model) {
     sampleText,
     inputLabel: ruleInputLabel(rule, model),
     outputLabel: ruleOutputLabel(rule, model),
+    // The output glyph names, with class references expanded, so the panel can
+    // draw each one on its own.
+    outputGlyphs: (rule.output ?? []).flatMap((token) => {
+      const raw = stripIgnoreMark(token.value);
+      if (!raw) {
+        return [];
+      }
+      if (isClassToken(token)) {
+        return model?.expandTokens?.([token])?.[0]?.members?.filter(Boolean) ?? [];
+      }
+      return [raw];
+    }),
     isContextual: info.kind === "contextual" || info.kind === "ligature",
     kind: info.kind,
     kindLabel: info.label,
