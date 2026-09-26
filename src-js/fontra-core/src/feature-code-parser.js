@@ -943,15 +943,29 @@ export function buildLookupBlock(name, bodyLines) {
 
 /**
  * Find all feature blocks in a parsed tree, including nested ones.
+ *
+ * Accepts either a container (with `.items`) or a single feature/lookup node.
  */
 export function collectFeatures(node, out = []) {
+  if (!node) {
+    return out;
+  }
+  if (!Array.isArray(node.items)) {
+    // A single feature/lookup node was passed in: collect it, then whatever
+    // features are nested inside it.
+    if (node.kind === "feature" || node.kind === "lookup") {
+      out.push(node);
+    }
+    if (node.body) {
+      collectFeatures(node.body, out);
+    }
+    return out;
+  }
   for (const item of node.items) {
     if (item.kind === "feature") {
       out.push(item);
-      if (item.body) {
-        collectFeatures(item.body, out);
-      }
-    } else if (item.body) {
+    }
+    if (item.body) {
       collectFeatures(item.body, out);
     }
   }
@@ -960,15 +974,28 @@ export function collectFeatures(node, out = []) {
 
 /**
  * Find all lookup blocks in a parsed tree, including nested ones.
+ *
+ * Accepts either a container (with `.items`) or a single feature/lookup node.
  */
 export function collectLookups(node, out = []) {
+  if (!node) {
+    return out;
+  }
+  if (!Array.isArray(node.items)) {
+    // A single feature/lookup node was passed in.
+    if (node.kind === "lookup") {
+      out.push(node);
+    }
+    if (node.body) {
+      collectLookups(node.body, out);
+    }
+    return out;
+  }
   for (const item of node.items) {
     if (item.kind === "lookup") {
       out.push(item);
-      if (item.body) {
-        collectLookups(item.body, out);
-      }
-    } else if (item.body) {
+    }
+    if (item.body) {
       collectLookups(item.body, out);
     }
   }
@@ -1021,10 +1048,13 @@ export function resolveFeatureLookups(featureNode, allLookups) {
 
 /**
  * Collect sub rules from a block.
+ *
+ * Accepts a block ({ items }), or a parsed tree / feature / lookup node, so
+ * callers do not have to know which level they are holding.
  */
 export function collectSubRules(node) {
   const out = [];
-  for (const item of node.items) {
+  for (const item of iterateItems(node)) {
     if (item.kind === "sub" || item.kind === "substitution-rule") {
       out.push(item);
     } else if (item.kind === "ignore") {
@@ -1032,6 +1062,20 @@ export function collectSubRules(node) {
     }
   }
   return out;
+}
+
+// Yield the statements in a block, or in the body of a feature/lookup node.
+function* iterateItems(node) {
+  if (!node) {
+    return;
+  }
+  if (Array.isArray(node.items)) {
+    yield* node.items;
+    return;
+  }
+  if (node.body) {
+    yield* iterateItems(node.body);
+  }
 }
 
 export { glyphClassToString };
