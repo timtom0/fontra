@@ -2,7 +2,6 @@ import { applicationSettingsController } from "@fontra/core/application-settings
 import { guessDirectionFromCodePoints } from "@fontra/core/glyph-data.js";
 import * as html from "@fontra/core/html-utils.js";
 import { addStyleSheet } from "@fontra/core/html-utils.js";
-import { translate } from "@fontra/core/localization.js";
 import { ShaperController } from "@fontra/core/shaper-controller.js";
 import { scheduleCalls } from "@fontra/core/utils.ts";
 import { themeColorCSS } from "@fontra/web-components/theme-support.js";
@@ -13,11 +12,13 @@ import {
 } from "@fontra/core/feature-code-parser.js";
 import {
   ARABIC_JOINING_FEATURES,
-  FEATURE_GROUPS,
   FeatureCodeModel,
   featureDocURL,
   featureTitle,
+  getFeatureGroups,
+  getAllFeatureTags,
 } from "./feature-code-model.js";
+import { describeRule, stripIgnoreMark } from "./rule-sample.js";
 import { showDialogCannotEditReadOnly, BaseInfoPanel } from "./panel-base.js";
 
 const colors = {
@@ -31,6 +32,7 @@ const colors = {
   "preview-background": ["#FAFAFA", "#2A2A2A"],
   "preview-missing": ["#C0392B", "#E74C3C"],
   "preview-glyph-fill": ["#111111", "#EEEEEE"],
+  "section-header-background": ["#F0F0F0", "#444444"],
 };
 
 addStyleSheet(`
@@ -40,7 +42,6 @@ ${themeColorCSS(colors, ":root")}
   display: grid;
   grid-template-rows: min-content auto;
   gap: 0.5em;
-  height: 100%;
   padding: 0.5em;
   box-sizing: border-box;
 }
@@ -73,80 +74,44 @@ ${themeColorCSS(colors, ":root")}
   display: none;
 }
 
-/* Preview */
+/* Sections: collapsible */
 
-.ot-features-preview-container {
-  display: grid;
-  grid-template-columns: min-content min-content 1fr;
-  gap: 0.5em;
-  align-items: center;
-  background-color: var(--ui-element-background-color);
-  border-radius: 0.5em;
-  padding: 0.5em;
+.ot-group {
+  margin-top: 0.6em;
 }
 
-.ot-features-preview-canvas {
-  background-color: var(--preview-background);
-  border-radius: 0.3em;
-  border: 0.5px solid var(--horizontal-rule-color);
-  display: block;
-}
-
-.ot-features-preview-info {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.2em 0.75em;
-  font-size: 0.9em;
-  align-content: center;
-  max-height: 8em;
-  overflow-y: auto;
-}
-
-.ot-features-preview-info .key {
-  color: var(--muted-foreground-color, #666);
-}
-
-.ot-features-preview-info .value.missing {
-  color: var(--preview-missing);
+.ot-group-title {
   font-weight: bold;
+  margin: 0.4em 0 0.2em 0;
+  opacity: 0.85;
 }
-
-.ot-features-glyph-inputs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25em;
-  align-items: center;
-}
-
-.ot-features-glyph-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3em;
-  background-color: var(--ui-element-background-color);
-  border: 0.5px solid var(--horizontal-rule-color);
-  border-radius: 0.3em;
-  padding: 0.1em 0.4em;
-  font-family: monospace;
-  font-size: 0.9em;
-}
-
-.ot-features-glyph-chip.missing {
-  border-color: var(--preview-missing);
-  color: var(--preview-missing);
-}
-
-/* Rules */
 
 .ot-feature-section {
-  display: grid;
-  gap: 0.4em;
+  border: 0.5px solid var(--horizontal-rule-color);
+  border-radius: 0.4em;
+  margin-bottom: 0.3em;
+  overflow: hidden;
 }
 
-.ot-feature-header {
+.ot-section-header {
   display: flex;
   gap: 0.5em;
   align-items: center;
   flex-wrap: wrap;
+  cursor: pointer;
+  padding: 0.35em 0.5em;
+  background-color: var(--section-header-background);
+  user-select: none;
+}
+
+.ot-section-header:hover {
+  filter: brightness(0.97);
+}
+
+.ot-section-chevron {
+  width: 1em;
+  height: 1em;
+  flex: 0 0 auto;
 }
 
 .ot-feature-tag {
@@ -157,6 +122,11 @@ ${themeColorCSS(colors, ":root")}
   padding: 0.1em 0.4em;
 }
 
+.ot-feature-summary {
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
 .ot-feature-doc-link {
   color: inherit;
   opacity: 0.7;
@@ -165,10 +135,21 @@ ${themeColorCSS(colors, ":root")}
   gap: 0.2em;
 }
 
+.ot-section-body {
+  display: grid;
+  gap: 0.4em;
+  padding: 0.5em;
+}
+
+.ot-section-body.closed {
+  display: none;
+}
+
+/* Rules */
+
 .ot-rules-list {
   display: grid;
   gap: 0.3em;
-  padding-left: 1.2em;
 }
 
 .ot-rule-card {
@@ -191,7 +172,7 @@ ${themeColorCSS(colors, ":root")}
 .ot-rule-card.k-unmanaged { border-left-color: var(--rule-kind-deletion); opacity: 0.7; }
 
 .ot-rule-kind {
-  font-size: 0.8em;
+  font-size: 0.75em;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   color: var(--muted-foreground-color, #666);
@@ -210,20 +191,42 @@ ${themeColorCSS(colors, ":root")}
   opacity: 0.6;
 }
 
-.ot-rule-glyphs .ignored {
-  opacity: 0.55;
-  font-style: italic;
-}
-
 .ot-rule-glyphs .missing {
   color: var(--preview-missing);
   text-decoration: underline wavy;
 }
 
+/* Per-rule sample */
+
+.ot-rule-sample {
+  display: flex;
+  gap: 0.6em;
+  align-items: center;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+}
+
+.ot-rule-sample-canvas {
+  background-color: var(--preview-background);
+  border-radius: 0.25em;
+  border: 0.5px solid var(--horizontal-rule-color);
+  display: block;
+}
+
+.ot-rule-sample-text {
+  font-size: 1.1em;
+  line-height: 1.3;
+}
+
+.ot-rule-sample-label {
+  font-size: 0.8em;
+  color: var(--muted-foreground-color, #666);
+  font-family: monospace;
+}
+
 .ot-feature-empty {
   font-style: italic;
   opacity: 0.7;
-  padding-left: 1.2em;
 }
 
 .ot-add-rule-row {
@@ -231,7 +234,6 @@ ${themeColorCSS(colors, ":root")}
   gap: 0.5em;
   align-items: center;
   flex-wrap: wrap;
-  padding-left: 1.2em;
 }
 
 .ot-add-rule-row input[type="text"] {
@@ -239,15 +241,22 @@ ${themeColorCSS(colors, ":root")}
 }
 `);
 
-const PREVIEW_FONT_SIZE = 46;
+const SAMPLE_FONT_SIZE = 34;
+const SAMPLE_ASPECT = { width: 220, height: 56 };
+
+// Collapsed/expanded state per feature tag, kept across re-renders.
+const sectionOpenState = new Map();
+
+function isSectionOpen(tag, defaultOpen = true) {
+  if (sectionOpenState.has(tag)) {
+    return sectionOpenState.get(tag);
+  }
+  return defaultOpen;
+}
 
 /**
  * Guess the indentation used by the statements in a block, so inserted rules
- * line up with the existing ones. Falls back to two spaces.
- *
- * NB: a statement's raw text starts with the whitespace that precedes it, and
- * that usually begins with a newline, so we measure the indentation of the
- * *first* line that has actual content.
+ * line up with the existing ones.
  */
 function detectIndent(block, fallback = "  ") {
   for (const item of block?.items ?? []) {
@@ -263,8 +272,6 @@ function detectIndent(block, fallback = "  ") {
 
 /**
  * If a named lookup has no statements left, remove the lookup block itself.
- * A leftover "lookup foo { } foo;" is dead weight and feaLib will complain if
- * it is the only content left.
  */
 function removeLookupIfEmpty(lookup, model) {
   if (!lookup || !lookup.body) {
@@ -290,10 +297,9 @@ function removeLookupIfEmpty(lookup, model) {
 /**
  * A graphical editor for OpenType layout features.
  *
- * Instead of hand-writing FEA, the user picks a feature tag (ligatures,
- * contextual alternates, the Arabic joining features, ...) and edits the
- * substitution rules as rows. A live preview shapes sample text through
- * HarfBuzz with the actual feature code, so changes are visible immediately.
+ * Each feature is a collapsible section; each rule inside it shows a live
+ * sample of the input text beside the rule's own preview, so you can see what
+ * the rule does without typing into a shared preview box.
  */
 export class OpenTypeFeaturesPanel extends BaseInfoPanel {
   static title = "opentype-features.title";
@@ -301,34 +307,57 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
   static fontAttributes = ["features", "glyphMap"];
 
   initializePanel() {
-    super.initializePanel();
+    // Set up our own state *before* calling super: BaseInfoPanel.initializePanel()
+    // calls this.setupUI() synchronously, so anything assigned afterwards would
+    // be missing during that first render (and would then be re-rendered by the
+    // async call below, duplicating the sections).
+    this.previewFeatures = {};
+    this._glyphInstances = new Map();
+    this._shaper = null;
+    this._shaperProblem = null;
+    this._statusMessage = null;
+    this._sampleQueue = [];
+    // Guards against two concurrent setupUI() calls both rendering.
+    this._setupInProgress = null;
 
     this.shaperController = new ShaperController(
       this.fontController,
       applicationSettingsController
     );
 
-    this.previewText = "";
-    this.selectedTag = "liga";
-    this.previewScript = null;
-    this.previewLanguage = "dflt";
-    this.previewFeatures = {};
-    this._glyphInstances = new Map();
-    this._updatePreviewScheduled = null;
+    // Expose for debugging / automated checks.
+    window.__otFeaturesPanel = this;
 
-    this.setupUI();
+    super.initializePanel();
   }
 
   async setupUI() {
+    // Serialize: if a render is already in flight, wait for it and then do one
+    // more pass with the latest data, rather than rendering concurrently.
+    if (this._setupInProgress) {
+      await this._setupInProgress;
+    }
+    this._setupInProgress = this._doSetupUI();
+    try {
+      await this._setupInProgress;
+    } finally {
+      this._setupInProgress = null;
+    }
+  }
+
+  async _doSetupUI() {
     const features = await this.fontController.getFeatures();
     this.model = new FeatureCodeModel(features.text ?? "");
+    this.model.fontController = this.fontController;
 
     this.panelElement.id = this.constructor.id;
     this.panelElement.innerHTML = "";
 
+    // Make sure the shaper is ready before we draw any samples.
+    await this._ensureShaper();
+
     const panel = html.div({ id: "opentype-features-panel" }, []);
 
-    // --- Toolbar ---------------------------------------------------------
     panel.appendChild(
       html.div({ class: "ot-features-toolbar" }, [
         html.span({ class: "ot-features-status" }, [
@@ -346,15 +375,11 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
           },
           [this._statusMessage?.text || ""]
         ),
-        ...this._makeFeatureTagSelector(),
       ])
     );
 
-    // --- Preview ---------------------------------------------------------
-    panel.appendChild(this._makePreviewElement());
-
-    // --- Feature sections ------------------------------------------------
     panel.appendChild(this._makeFeatureSectionsElement());
+    panel.appendChild(this._makeAddFeatureElement());
 
     // A datalist of all glyph names, for autocompletion in the rule inputs.
     const glyphNames = Object.keys(this.fontController.glyphMap).sort();
@@ -367,127 +392,22 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     );
 
     this.panelElement.appendChild(panel);
-    this.panelElement.focus?.();
 
-    await this.updatePreview();
-  }
-
-  _makeFeatureTagSelector() {
-    // Collect the tags that actually exist, grouped for a readable menu.
-    const existingTags = new Set(this.model.features.map((f) => f.tag));
-    const allTagsInGroups = new Set();
-    for (const group of FEATURE_GROUPS) {
-      for (const tag of group.tags) {
-        allTagsInGroups.add(tag);
-      }
-    }
-
-    const makeOption = (tag) => {
-      const el = html.button(
-        {
-          class: "fontra-button",
-          onclick: () => this._selectTag(tag),
-          title: featureDocURL(tag) || featureTitle(tag),
-        },
-        [tag]
-      );
-      el.dataset.tag = tag;
-      el.classList.toggle("selected", tag === this.selectedTag);
-      return el;
-    };
-
-    const elements = [];
-    for (const group of FEATURE_GROUPS) {
-      // Only show groups that have at least one relevant tag
-      const relevant = group.tags.filter(
-        (t) => existingTags.has(t) || allTagsInGroups.has(t)
-      );
-      if (!relevant.length) {
-        continue;
-      }
-      const header = html.div(
-        { style: "font-weight: bold; opacity: 0.8; margin-top: 0.4em;" },
-        [group.title]
-      );
-      const buttons = html.div(
-        { style: "display: flex; flex-wrap: wrap; gap: 0.3em;" },
-        relevant.map(makeOption)
-      );
-      elements.push(header, buttons);
-    }
-
-    return [
-      html.div({ style: "flex-basis: 100%;" }, [
-        html.span({ style: "font-weight: bold; margin-right: 0.5em;" }, ["Feature:"]),
-        ...elements,
-      ]),
-    ];
-  }
-
-  _selectTag(tag) {
-    this.selectedTag = tag;
-    this.setupUI();
-  }
-
-  /**
-   * Show a transient message in the toolbar (used for "nothing to do" cases
-   * like adding a duplicate rule).
-   */
-  _setStatusMessage(text, level = "info") {
-    this._statusMessage = text ? { text, level } : null;
-    const el = this.panelElement.querySelector(".ot-features-message");
-    if (el) {
-      el.textContent = text || "";
-      el.className = `ot-features-message ${level}`;
-      el.classList.toggle("hidden", !text);
-    }
-  }
-
-  _makePreviewElement() {
-    this.previewCanvas = html.createDomElement("canvas", {
-      class: "ot-features-preview-canvas",
-    });
-    this.previewInfoElement = html.div({
-      class: "ot-features-preview-info",
-    });
-
-    // Debounce: shaping on every keystroke is wasteful.
-    this._scheduleUpdatePreview = scheduleCalls(() => this.updatePreview(), 150);
-
-    const textInput = html.createDomElement("input", {
-      type: "text",
-      id: "ot-features-preview-text",
-      value: this.previewText,
-      placeholder: "type text to preview, e.g. office or بسم",
-      size: 30,
-    });
-    textInput.addEventListener("input", () => {
-      this.previewText = textInput.value;
-      this._scheduleUpdatePreview();
-    });
-
-    return html.div({ class: "ot-features-preview-container" }, [
-      html.div({ style: "display: grid; gap: 0.3em;" }, [
-        html.label({ for: "ot-features-preview-text" }, ["Preview text:"]),
-        textInput,
-      ]),
-      this.previewCanvas,
-      this.previewInfoElement,
-    ]);
+    // Draw the per-rule samples after the elements are in the document.
+    this._renderAllSamples();
   }
 
   _makeFeatureSectionsElement() {
-    const container = html.div({ style: "display: grid; gap: 1em;" }, []);
+    const container = html.div({ class: "ot-sections" }, []);
 
-    for (const group of FEATURE_GROUPS) {
-      // Show the Arabic group first when an Arabic feature is selected
+    for (const group of getFeatureGroups()) {
       const tagsInGroup = group.tags.filter((tag) => this.model.hasTag(tag));
       if (!tagsInGroup.length) {
         continue;
       }
       container.appendChild(
-        html.div({ class: "ot-feature-section" }, [
-          html.div({ style: "font-weight: bold;" }, [group.title]),
+        html.div({ class: "ot-group" }, [
+          html.div({ class: "ot-group-title" }, [group.title]),
           ...tagsInGroup.map((tag) => this._makeFeatureSection(tag)),
         ])
       );
@@ -496,71 +416,98 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     if (!this.model.features.length) {
       container.appendChild(
         html.div({ class: "ot-feature-empty" }, [
-          "This font has no OpenType feature code yet. Use the ",
-          html.a({ href: "#opentype-feature-code-panel" }, ["Feature code"]),
-          " panel to add some, or add a feature below.",
+          "This font has no OpenType feature code yet. Add a feature below, ",
+          "or use the Feature code panel to write FEA by hand.",
         ])
       );
-      container.appendChild(this._makeAddFeatureElement());
     }
 
     return container;
   }
 
   _makeFeatureSection(tag) {
-    const selected = tag === this.selectedTag;
     const entries = this.model.rulesForTag(tag);
+    const open = isSectionOpen(tag, true);
     const arabicName = ARABIC_JOINING_FEATURES[tag];
+    const humanName = arabicName || featureTitle(tag).split(" — ")[1] || "";
 
-    const header = html.div({ class: "ot-feature-header" }, [
-      html.span({ class: "ot-feature-tag" }, [tag]),
-      html.span({}, [arabicName || featureTitle(tag).split(" — ")[1] || ""]),
-      this._makeFeatureToggle(tag),
+    // NB: Fontra ships chevron-up and chevron-right but no chevron-down, so we
+    // use chevron-up rotated -90deg to mean "collapsed". See the CSS.
+    const chevron = html.createDomElement("inline-svg", {
+      class: `ot-section-chevron${open ? "" : " closed"}`,
+      src: open ? "/tabler-icons/chevron-up.svg" : "/tabler-icons/chevron-right.svg",
+    });
+
+    const header = html.div(
+      {
+        class: "ot-section-header",
+        onclick: (event) => {
+          if (event.target.closest("icon-button, a")) {
+            return;
+          }
+          this._toggleSection(tag);
+        },
+      },
+      [
+        chevron,
+        html.span({ class: "ot-feature-tag" }, [tag]),
+        html.span({}, [humanName]),
+        html.span({ class: "ot-feature-summary" }, [
+          entries.length
+            ? `${entries.length} rule${entries.length == 1 ? "" : "s"}`
+            : "no rules",
+        ]),
+        this._makeFeatureToggle(tag),
+        ...(() => {
+          const docURL = featureDocURL(tag);
+          return docURL
+            ? [
+                html.a(
+                  {
+                    class: "ot-feature-doc-link",
+                    href: docURL,
+                    target: "_blank",
+                    onclick: (event) => event.stopPropagation(),
+                  },
+                  ["docs ↗"]
+                ),
+              ]
+            : [];
+        })(),
+      ]
+    );
+
+    const body = html.div({ class: `ot-section-body${open ? "" : " closed"}` }, [
+      entries.length
+        ? html.div(
+            { class: "ot-rules-list" },
+            entries.map(({ rule, lookup }) => this._makeRuleCard(tag, rule, lookup))
+          )
+        : html.div({ class: "ot-feature-empty" }, [`No rules in ${tag} yet.`]),
+      this._makeAddRuleElement(tag),
     ]);
 
-    const docURL = featureDocURL(tag);
-    if (docURL) {
-      header.appendChild(
-        html.a({ class: "ot-feature-doc-link", href: docURL, target: "_blank" }, [
-          "docs ↗",
-        ])
-      );
-    }
-
-    const bodyItems = [];
-    if (entries.length) {
-      bodyItems.push(
-        html.div(
-          { class: "ot-rules-list" },
-          entries.map(({ rule, lookup }) => this._makeRuleCard(tag, rule, lookup))
-        )
-      );
-    } else {
-      bodyItems.push(html.div({ class: "ot-feature-empty" }, [`No rules in ${tag}.`]));
-    }
-
-    if (selected && !this.fontController.readOnly) {
-      bodyItems.push(this._makeAddRuleElement(tag));
-    }
-
-    return html.div(
-      {
-        class: "ot-feature-section",
-        style: selected
-          ? "outline: 1px solid var(--horizontal-rule-color); outline-offset: 4px; border-radius: 0.3em;"
-          : "",
-      },
-      [header, ...bodyItems]
-    );
+    return html.div({ "class": "ot-feature-section", "data-tag": tag }, [header, body]);
   }
 
-  /**
-   * The eye toggle switches a feature on or off in the preview.
-   *
-   * A feature is on by default (that is how the font behaves), so we track
-   * only the features the user has explicitly turned *off*: `previewFeatures`
-   * maps tag -> on/off, defaulting to true.
-   */
+  _toggleSection(tag) {
+    const open = !isSectionOpen(tag, true);
+    sectionOpenState.set(tag, open);
+
+    // Toggle in place rather than re-rendering, so the page does not scroll
+    // back to the top (which a full setupUI() does).
+    const section = this.panelElement.querySelector(
+      `.ot-feature-section[data-tag="${tag}"]`
+    );
+    if (!section) {
+      return;
+    }
+    const body = section.querySelector(".ot-section-body");
+    const chevron = section.querySelector(".ot-section-chevron");
+    body?.classList.toggle("closed", !open);
+    chevron?.classList.toggle("closed", !open);
+  }
+
   _isFeatureEnabledInPreview(tag) {
     return this.previewFeatures[tag] !== false;
   }
@@ -569,10 +516,9 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     const isOn = this._isFeatureEnabledInPreview(tag);
     return html.createDomElement("icon-button", {
       src: isOn ? "/tabler-icons/eye.svg" : "/tabler-icons/eye-closed.svg",
-      title: `${isOn ? "Disable" : "Enable"} ${tag} in the preview`,
+      title: `${isOn ? "Disable" : "Enable"} ${tag} in the samples`,
       onclick: async () => {
         this.previewFeatures[tag] = !isOn;
-        await this.updatePreview();
         await this.setupUI();
       },
     });
@@ -589,7 +535,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       const bare = isIgnored ? rawName.slice(0, -1) : rawName;
       const label = isIgnored ? `${bare}'` : bare;
 
-      // A glyph class is only "missing" if none of its members exist.
       const namesToCheck =
         entry.isClass && entry.members.length ? entry.members : [bare];
       const missing = namesToCheck.every((n) => !this.fontController.hasGlyph(n));
@@ -600,13 +545,7 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
           ? `${bare} is not in the font`
           : bare;
 
-      return html.span(
-        {
-          class: missing ? "missing" : "",
-          title,
-        },
-        [label]
-      );
+      return html.span({ class: missing ? "missing" : "", title }, [label]);
     };
 
     const side = (entries) =>
@@ -614,7 +553,25 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
         i ? [" ", glyphElement(entry)] : [glyphElement(entry)]
       );
 
-    return html.div({ class: `ot-rule-card k-${info.kind}` }, [
+    // The live sample for this rule.
+    const sampleCanvas = html.createDomElement("canvas", {
+      class: "ot-rule-sample-canvas",
+    });
+    const sample = describeRule(rule, this.model);
+    sampleCanvas._rule = sample;
+    sampleCanvas._tag = tag;
+
+    const sampleRow = html.div({ class: "ot-rule-sample" }, [
+      sampleCanvas,
+      html.div({}, [
+        html.div({ class: "ot-rule-sample-text" }, [sample.sampleText || "—"]),
+        html.div({ class: "ot-rule-sample-label" }, [
+          sample.outputLabel ? `→ ${sample.outputLabel}` : "→ (removed)",
+        ]),
+      ]),
+    ]);
+
+    const card = html.div({ class: `ot-rule-card k-${info.kind}` }, [
       html.span({ class: "ot-rule-kind" }, [info.label]),
       html.div({ class: "ot-rule-glyphs" }, [
         ...side(inputs),
@@ -628,11 +585,9 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
               { class: "ot-rule-kind", title: `Defined in lookup "${lookup.name}"` },
               ["↳ " + lookup.name]
             )
-          : null,
-        // Every rule can be deleted, including rules that live in a named
-        // lookup — deleteRule() removes it from wherever it is defined.
+          : "",
         this.fontController.readOnly
-          ? null
+          ? ""
           : html.createDomElement("icon-button", {
               src: "/tabler-icons/trash.svg",
               title: "Delete this rule",
@@ -640,19 +595,11 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
               onclick: async () => await this.deleteRule(rule, lookup),
             }),
       ]),
+      sampleRow,
     ]);
-  }
 
-  _makeGlyphNameInput(placeholder, size) {
-    const el = html.createDomElement("input", {
-      type: "text",
-      placeholder,
-      size,
-    });
-    // "list" is a read-only DOM property, so it must be set with
-    // setAttribute(), not via createDomElement's attribute assignment.
-    el.setAttribute("list", "ot-features-glyph-names");
-    return el;
+    this._sampleQueue.push(sampleCanvas);
+    return card;
   }
 
   _makeAddRuleElement(tag) {
@@ -664,8 +611,8 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       class: "fontra-button",
       value: "Add rule",
       onclick: async () => {
-        const inputs = inputField.value.split(/\s+/).filter((s) => s);
-        const outputs = outputField.value.split(/\s+/).filter((s) => s);
+        const inputs = inputField.value.split(/\s+/).filter(Boolean);
+        const outputs = outputField.value.split(/\s+/).filter(Boolean);
         if (!inputs.length) {
           return;
         }
@@ -679,6 +626,16 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       outputField,
       addButton,
     ]);
+  }
+
+  _makeGlyphNameInput(placeholder, size) {
+    const el = html.createDomElement("input", {
+      type: "text",
+      placeholder,
+      size,
+    });
+    el.setAttribute("list", "ot-features-glyph-names");
+    return el;
   }
 
   _makeAddFeatureElement() {
@@ -704,6 +661,192 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     ]);
   }
 
+  /**
+   * Show a transient message in the toolbar.
+   */
+  _setStatusMessage(text, level = "info") {
+    this._statusMessage = text ? { text, level } : null;
+    const el = this.panelElement.querySelector(".ot-features-message");
+    if (el) {
+      el.textContent = text || "";
+      el.className = `ot-features-message ${level}`;
+      el.classList.toggle("hidden", !text);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Per-rule samples
+  // ---------------------------------------------------------------------
+
+  async _ensureShaper() {
+    try {
+      const { shaper, messages } = await this.shaperController.getShaper(true);
+      this._shaper = shaper;
+      this._shaperProblem = messages?.length
+        ? messages[0].text
+        : !Object.keys(shaper.getFeatureInfo?.("GSUB") ?? {}).length
+          ? "The feature code did not compile, so no substitutions are shown."
+          : null;
+    } catch (e) {
+      console.error(e);
+      this._shaper = null;
+      this._shaperProblem = e.message || String(e);
+    }
+  }
+
+  _renderAllSamples() {
+    const queue = this._sampleQueue;
+    this._sampleQueue = [];
+    if (!queue.length) {
+      return;
+    }
+    // Draw the first few immediately, the rest on the next frame so a font
+    // with many rules does not block the UI.
+    const draw = async () => {
+      for (const canvas of queue) {
+        await this._drawSample(canvas);
+      }
+    };
+    draw();
+  }
+
+  async _drawSample(canvas) {
+    const sample = canvas._rule;
+    const tag = canvas._tag;
+    if (!sample) {
+      return;
+    }
+    if (!sample.sampleText) {
+      this._sizeCanvas(canvas, 0);
+      return;
+    }
+    if (this._shaperProblem) {
+      this._sizeCanvas(canvas, 0);
+      return;
+    }
+
+    const glyphs = await this._shape(sample.sampleText, tag);
+    this._drawGlyphs(canvas, glyphs);
+  }
+
+  async _shape(text, tag) {
+    const codePoints = [...text].map((c) => c.codePointAt(0));
+    if (!codePoints.length || !this._shaper) {
+      return [];
+    }
+    const glyphObjects = {};
+    for (const [name, value] of this._glyphInstances) {
+      glyphObjects[name] = value;
+    }
+
+    const options = {
+      variations: {},
+      features: this._featureSettings(),
+      direction: guessDirectionFromCodePoints(codePoints),
+      script: null,
+      language: "dflt",
+      kerningPairFunc: null,
+      trace: false,
+    };
+
+    let result = this._shaper.shape(codePoints, glyphObjects, options);
+    for (let pass = 0; pass < 4; pass++) {
+      const missing = result.requiredGlyphs.filter((n) => !this._glyphInstances.has(n));
+      if (!missing.length) {
+        break;
+      }
+      let loaded = false;
+      for (const name of missing) {
+        const instance = await this.fontController.getGlyphInstance(name, {});
+        if (instance) {
+          this._glyphInstances.set(name, {
+            xAdvance: instance.xAdvance,
+            anchors: instance.anchors,
+            propagatedAnchors: instance.propagatedAnchors,
+            instance,
+          });
+          loaded = true;
+        }
+      }
+      if (!loaded) {
+        break;
+      }
+      const objs = {};
+      for (const [name, value] of this._glyphInstances) {
+        objs[name] = value;
+      }
+      result = this._shaper.shape(codePoints, objs, options);
+    }
+    return result.glyphs;
+  }
+
+  _featureSettings() {
+    // Explicitly turn off any feature the user has disabled.
+    const settings = [];
+    for (const [t, on] of Object.entries(this.previewFeatures)) {
+      if (on === false) {
+        settings.push([t, 0]);
+      }
+    }
+    return settings;
+  }
+
+  _sizeCanvas(canvas, width) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(width, 0);
+    canvas.width = Math.max(Math.round(w * dpr), 1);
+    canvas.height = Math.round(SAMPLE_ASPECT.height * dpr);
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${SAMPLE_ASPECT.height}px`;
+  }
+
+  _drawGlyphs(canvas, glyphs) {
+    if (!canvas.isConnected) {
+      return;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const unitsPerEm = this.fontController.unitsPerEm || 1000;
+    const scale = (SAMPLE_FONT_SIZE / unitsPerEm) * dpr;
+
+    let width = 0;
+    for (const g of glyphs) {
+      width += (g.xAdvance + (g.xOffset || 0)) * scale;
+    }
+    const padX = 6 * dpr;
+    this._sizeCanvas(canvas, Math.min(width + padX * 2, 400));
+
+    const context = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+    context.clearRect(0, 0, w, h);
+    if (!glyphs.length) {
+      return;
+    }
+
+    const fill = getComputedStyle(canvas)
+      .getPropertyValue("--preview-glyph-fill")
+      .trim();
+    context.fillStyle = fill || "#111";
+
+    let x = padX;
+    const baseline = h - 8 * dpr;
+    for (const glyph of glyphs) {
+      const obj = this._glyphInstances.get(glyph.glyphname);
+      const path2d = obj?.instance?.flattenedPath2d;
+      if (path2d) {
+        context.save();
+        context.translate(
+          x + (glyph.xOffset || 0) * scale,
+          baseline - (glyph.yOffset || 0) * scale
+        );
+        context.scale(scale, -scale);
+        context.fill(path2d);
+        context.restore();
+      }
+      x += glyph.xAdvance * scale;
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Editing
   // ---------------------------------------------------------------------
@@ -721,9 +864,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       const feature = model.features.find((f) => f.tag === tag);
 
       if (feature) {
-        // Refuse a rule that duplicates one already in this feature: feaLib
-        // rejects it ("Already defined substitution"), and the user would
-        // rather hear that here than see the feature silently fail to build.
         const wanted = `${inputs.join(" ")} by ${outputs.join(" ")}`;
         const existing = resolveFeatureLookups(feature, model.lookups).flatMap(
           (lookup) => collectSubRules(lookup.body)
@@ -739,16 +879,10 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
           return false;
         }
 
-        // Prefer appending to a lookup the feature already calls: that's where
-        // a type designer would add the rule, and it keeps the feature block
-        // itself as a clean list of references.
         const lookups = resolveFeatureLookups(feature, model.lookups);
         const target =
           lookups.length >= 1 ? lookups[lookups.length - 1].body : feature.body;
 
-        // Match the indentation of the rules already in this block, and start
-        // on a fresh line: the previous statement's text does not include the
-        // newline that precedes "}" (that lives in trailingRaw).
         const indent = detectIndent(target);
         const lastItem = target.items[target.items.length - 1];
         const needsLeadingNewline = !lastItem || !lastItem.raw?.endsWith("\n");
@@ -760,7 +894,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
           end: -1,
         });
       } else {
-        // Create a new feature block at the end of the file.
         model.root.items.push({
           kind: "raw",
           raw: `\nfeature ${tag} {\n  ${statement}} ${tag};\n`,
@@ -777,8 +910,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       return;
     }
     await this._editFeatureCode((model) => {
-      // The rule always lives in a body: either the lookup that defines it or
-      // the feature block itself.
       const bodies = [];
       if (lookup && lookup.body) {
         bodies.push(lookup.body);
@@ -786,7 +917,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       if (rule.parentBody) {
         bodies.push(rule.parentBody);
       }
-      // As a fallback, search every feature and lookup body.
       for (const node of [...model.features, ...model.lookups]) {
         if (node.body) {
           bodies.push(node.body);
@@ -796,8 +926,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
         const index = body.items.indexOf(rule);
         if (index >= 0) {
           body.items.splice(index, 1);
-          // If that emptied a named lookup, drop the lookup block too, so we
-          // don't leave a stray "lookup foo { } foo;" behind.
           removeLookupIfEmpty(lookup, model);
           return;
         }
@@ -820,23 +948,15 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     }, `add feature ${tag}`);
   }
 
-  /**
-   * Apply an edit to the parsed model and write the result back to the font.
-   *
-   * `editFunc` may return `false` to abort without writing (e.g. the user asked
-   * for a rule that already exists).
-   */
   async _editFeatureCode(editFunc, undoLabel) {
     const model = this.model;
     const result = editFunc(model);
     if (result === false) {
-      // The edit was rejected; just refresh so the UI matches the font again.
       await this.setupUI();
       return;
     }
     const newText = serializeFeatureCode(model.parsed);
     if (newText === model.text) {
-      // Nothing actually changed (e.g. deleting the only remaining rule).
       await this.setupUI();
       return;
     }
@@ -849,243 +969,5 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     });
     this._statusMessage = null;
     await this.setupUI();
-  }
-
-  // ---------------------------------------------------------------------
-  // Live preview
-  // ---------------------------------------------------------------------
-
-  async updatePreview() {
-    if (!this.previewCanvas) {
-      return;
-    }
-    // Expose for debugging / automated checks.
-    window.__otFeaturesPanel = this;
-
-    const codePoints = [...this.previewText].map((c) => c.codePointAt(0));
-
-    if (!codePoints.length) {
-      this._drawPreview([]);
-      this._updatePreviewInfo([], []);
-      return;
-    }
-
-    let shapedGlyphs = [];
-    let glyphObjects = {};
-    let requiredGlyphs = new Set();
-
-    try {
-      const { shaper, messages } = await this.shaperController.getShaper(true);
-
-      // If the feature code did not compile, the shaper silently falls back to
-      // the dumb shaper (no substitutions at all). Say so, rather than leaving
-      // the user staring at a preview that ignores their features.
-      //
-      // NB: don't test the class name: the bundle is minified, so names like
-      // "HBShaper" don't survive. getFeatureInfo() only returns real GSUB data
-      // for the HarfBuzz shaper.
-      if (messages?.length) {
-        this._shaperProblem = messages[0].text;
-      } else {
-        this._shaperProblem = null;
-      }
-      if (!Object.keys(shaper.getFeatureInfo?.("GSUB") ?? {}).length) {
-        this._shaperProblem =
-          "No compiled features: the feature code did not build a shaper " +
-          "font, so substitutions are not applied. Check the Feature Code panel.";
-      }
-      const shaperOptions = {
-        variations: {},
-        features: this._previewFeatureSettings(),
-        direction: this._previewDirectionFor(codePoints),
-        script: this._previewScriptFor(codePoints),
-        language: this.previewLanguage,
-        kerningPairFunc: null,
-        trace: false,
-      };
-
-      let result = shaper.shape(codePoints, glyphObjects, shaperOptions);
-
-      // Load the glyph instances the shaper asks for, then re-shape. Iterate
-      // until the shaper stops asking for new glyphs: a first pass may only
-      // reveal the substitutions it can make before it knows the advances of
-      // the substituted glyphs (this is what the glyph editor does too).
-      for (let pass = 0; pass < 4; pass++) {
-        const missing = result.requiredGlyphs.filter(
-          (glyphName) => !this._glyphInstances.has(glyphName)
-        );
-        if (!missing.length) {
-          break;
-        }
-
-        let loadedAny = false;
-        for (const glyphName of missing) {
-          const instance = await this.fontController.getGlyphInstance(glyphName, {});
-          if (instance) {
-            this._glyphInstances.set(glyphName, {
-              xAdvance: instance.xAdvance,
-              anchors: instance.anchors,
-              propagatedAnchors: instance.propagatedAnchors,
-              instance,
-            });
-            loadedAny = true;
-          }
-        }
-
-        for (const glyphName of result.requiredGlyphs) {
-          requiredGlyphs.add(glyphName);
-        }
-
-        if (!loadedAny) {
-          break;
-        }
-
-        const glyphObjects2 = {};
-        for (const [name, value] of this._glyphInstances) {
-          glyphObjects2[name] = value;
-        }
-        result = shaper.shape(codePoints, glyphObjects2, shaperOptions);
-      }
-
-      shapedGlyphs = result.glyphs;
-    } catch (e) {
-      console.error(e);
-      this._updatePreviewInfo([], [{ text: e.message || String(e), level: "error" }]);
-      this._drawPreview([]);
-      return;
-    }
-
-    this._drawPreview(shapedGlyphs);
-    this._updatePreviewInfo(shapedGlyphs, []);
-  }
-
-  _previewFeatureSettings() {
-    // Ask HarfBuzz to apply the features the user toggled on, plus keep the
-    // default-on set. Features toggled *off* are explicitly disabled.
-    const settings = [];
-    for (const [tag, onOff] of Object.entries(this.previewFeatures)) {
-      settings.push([tag, onOff ? 1 : 0]);
-    }
-    return settings;
-  }
-
-  _previewScriptFor(codePoints) {
-    // Let HarfBuzz guess the script unless the user pinned one.
-    return this.previewScript || null;
-  }
-
-  /**
-   * Direction for shaping. HarfBuzz's guessSegmentProperties() handles this
-   * when the buffer is unset, but being explicit makes Arabic previews
-   * reliable: without "rtl" the joining features are never applied.
-   */
-  _previewDirectionFor(codePoints) {
-    if (this.previewDirection) {
-      return this.previewDirection;
-    }
-    if (!codePoints.length) {
-      return null;
-    }
-    // Use Fontra's own heuristic (same one the glyph editor's text tool uses).
-    return guessDirectionFromCodePoints(codePoints);
-  }
-
-  _drawPreview(glyphs) {
-    const canvas = this.previewCanvas;
-    if (!canvas) {
-      return;
-    }
-
-    const dpr = window.devicePixelRatio || 1;
-    const unitsPerEm = this.fontController.unitsPerEm || 1000;
-    const scale = (PREVIEW_FONT_SIZE / unitsPerEm) * dpr;
-
-    // Measure
-    let width = 0;
-    let maxHeight = 0;
-    for (const glyph of glyphs) {
-      width += (glyph.xAdvance + (glyph.xOffset || 0)) * scale;
-      maxHeight = Math.max(maxHeight, Math.abs(glyph.yOffset || 0) * scale);
-    }
-    width = Math.max(width + 20 * dpr, 100 * dpr);
-    const height = (PREVIEW_FONT_SIZE + 20) * dpr;
-
-    canvas.width = width;
-    canvas.height = height;
-    canvas.style.width = `${width / dpr}px`;
-    canvas.style.height = `${height / dpr}px`;
-
-    const context = canvas.getContext("2d");
-    context.clearRect(0, 0, width, height);
-    if (!glyphs.length) {
-      return;
-    }
-
-    // canvas.fillStyle does not understand CSS custom properties, so resolve
-    // the theme colour through getComputedStyle.
-    const fillColor = getComputedStyle(this.panelElement)
-      .getPropertyValue("--preview-glyph-fill")
-      .trim();
-    context.fillStyle = fillColor || "#111111";
-
-    let x = 10 * dpr;
-    const baseline = height - 10 * dpr;
-
-    for (const glyph of glyphs) {
-      const glyphObject = this._glyphInstances.get(glyph.glyphname);
-      const path2d = glyphObject?.instance?.flattenedPath2d;
-      if (path2d) {
-        context.save();
-        context.translate(
-          x + (glyph.xOffset || 0) * scale,
-          baseline - (glyph.yOffset || 0) * scale
-        );
-        context.scale(scale, -scale);
-        context.fill(path2d);
-        context.restore();
-      }
-      x += glyph.xAdvance * scale;
-    }
-  }
-
-  _updatePreviewInfo(glyphs, messages) {
-    const el = this.previewInfoElement;
-    if (!el) {
-      return;
-    }
-    el.innerHTML = "";
-
-    if (messages.length) {
-      for (const message of messages) {
-        el.appendChild(html.div({ class: "value missing" }, [message.text]));
-      }
-      return;
-    }
-
-    if (!glyphs.length) {
-      el.appendChild(html.div({ class: "key" }, ["Enter some text above."]));
-      return;
-    }
-
-    if (this._shaperProblem) {
-      el.appendChild(html.div({ class: "value missing" }, [this._shaperProblem]));
-    }
-
-    el.appendChild(html.div({ class: "key" }, [`${glyphs.length} glyph(s):`]));
-
-    // NB: spread the flatMap result. Passing the array as a single child would
-    // make createDomElement append the array itself, which stringifies it.
-    const glyphChips = glyphs.flatMap((g, i) => {
-      const missing = !this.fontController.hasGlyph(g.glyphname);
-      const chip = html.span(
-        {
-          class: missing ? "missing" : "",
-          title: missing ? "not in font" : g.glyphname,
-        },
-        [g.glyphname]
-      );
-      return i ? [" ", chip] : [chip];
-    });
-    el.appendChild(html.div({ class: "value" }, glyphChips));
   }
 }

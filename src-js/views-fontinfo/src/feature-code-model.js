@@ -15,12 +15,20 @@ import { features as otFeatures } from "@fontra/core/opentype-tags.js";
  * through FeatureCodeModel, which re-serializes the whole file.
  */
 
-// Feature tags grouped for the GUI. Order matters: it drives the tab order.
+// Feature tags grouped for the GUI. Order matters: it drives the section order.
+//
+// A tag must appear in exactly ONE group. The panel renders one section per
+// (group, tag) pair, so a tag listed in two groups produced a duplicate
+// section (e.g. "calt" showing up under both Ligatures and Arabic).
+//
+// Where a tag serves more than one script, it is filed under the script that
+// uses it most, and `FEATURE_GROUPS_OTHER` below collects the rest so every
+// tag still gets a home.
 export const FEATURE_GROUPS = [
   {
     id: "ligatures",
     title: "Ligatures",
-    tags: ["liga", "clig", "dlig", "hlig", "rlig", "calt", "rclt"],
+    tags: ["liga", "clig", "dlig", "hlig"],
   },
   {
     id: "arabic",
@@ -64,32 +72,9 @@ export const FEATURE_GROUPS = [
     ],
   },
   {
-    id: "indic",
-    title: "Indic / other scripts",
-    tags: [
-      "nukt",
-      "akhn",
-      "rphf",
-      "rkrf",
-      "pref",
-      "half",
-      "pres",
-      "abvs",
-      "blws",
-      "psts",
-      "haln",
-      "vatu",
-      "cjct",
-      "dist",
-      "abvf",
-      "blwf",
-      "pstf",
-    ],
-  },
-  {
     id: "positioning",
     title: "Positioning",
-    tags: ["kern", "mark", "mkmk", "curs", "dist", "abvm", "blwm"],
+    tags: ["kern"],
   },
   {
     id: "figures",
@@ -169,6 +154,42 @@ export const FEATURE_GROUPS = [
     tags: ["locl", "ltra", "ltrm", "rtla", "rtlm", "rand"],
   },
 ];
+
+// Groups whose tags are split across scripts: a feature in these families shows
+// up under whichever script group already claims it, so they are not repeated.
+export const FEATURE_GROUPS_OTHER = [
+  {
+    id: "indic",
+    title: "Indic / other scripts",
+    tags: [],
+  },
+];
+
+/**
+ * The groups the panel renders, with every known tag assigned to exactly one
+ * group. Tags in a "split" family (Indic, Arabic, ...) that are not claimed by
+ * a primary group fall into the shared bucket for that family, so no tag is
+ * ever rendered in two sections.
+ */
+export function getFeatureGroups() {
+  const groups = FEATURE_GROUPS.map((g) => ({ ...g, tags: [...g.tags] }));
+
+  // Anything a "split" family would have claimed, minus what a primary group
+  // already lists.
+  const claimed = new Set(groups.flatMap((g) => g.tags));
+  for (const other of FEATURE_GROUPS_OTHER) {
+    const remaining = other.tags.filter((t) => !claimed.has(t));
+    if (remaining.length) {
+      groups.push({ ...other, tags: remaining });
+    }
+  }
+  return groups;
+}
+
+/** Every tag that has a section, in render order, with no duplicates. */
+export function getAllFeatureTags() {
+  return getFeatureGroups().flatMap((g) => g.tags);
+}
 
 // Tags that take part in Arabic joining. Used to label rule kinds.
 export const ARABIC_JOINING_FEATURES = {
