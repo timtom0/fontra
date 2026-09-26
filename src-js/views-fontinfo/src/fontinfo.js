@@ -10,12 +10,14 @@ import { CrossAxisMappingPanel } from "./panel-cross-axis-mapping.js";
 import { DevelopmentStatusDefinitionsPanel } from "./panel-development-status-definitions.js";
 import { FontInfoPanel } from "./panel-font-info.js";
 import { OpenTypeFeatureCodePanel } from "./panel-opentype-feature-code.js";
+import { OpenTypeFeaturesPanel } from "./panel-opentype-features.js";
 import { SourcesPanel } from "./panel-sources.js";
 
 const panelClasses = [
   FontInfoPanel,
   AxesPanel,
   SourcesPanel,
+  OpenTypeFeaturesPanel,
   OpenTypeFeatureCodePanel,
   ConditionalSubstitutionsPanel,
   CrossAxisMappingPanel,
