@@ -19,7 +19,7 @@ import {
   getAllFeatureTags,
 } from "./feature-code-model.js";
 import { describeRule, stripIgnoreMark } from "./rule-sample.js";
-import { glyphRunToSVG, glyphToSVG } from "./rule-preview-svg.js";
+import { glyphRunToSVG, glyphToSVG, getVerticalMetrics } from "./rule-preview-svg.js";
 import { showDialogCannotEditReadOnly, BaseInfoPanel } from "./panel-base.js";
 
 const colors = {
@@ -146,23 +146,25 @@ ${themeColorCSS(colors, ":root")}
   display: none;
 }
 
-/* Rules */
+/* Rules, laid out as a grid so several fit per row. */
 
 .ot-rules-list {
   display: grid;
-  gap: 0.3em;
+  /* Two or three cards per row, depending on how wide the panel is. */
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0.4em;
+  align-items: start;
 }
 
 .ot-rule-card {
   display: grid;
-  grid-template-columns: min-content 1fr min-content;
-  gap: 0.5em;
-  align-items: center;
+  grid-template-rows: auto auto min-content;
+  gap: 0.3em;
   background-color: var(--rule-card-background);
   border: 0.5px solid var(--rule-card-border);
   border-left-width: 0.3em;
   border-radius: 0.3em;
-  padding: 0.3em 0.5em;
+  padding: 0.35em 0.5em;
 }
 
 .ot-rule-card.k-ligature { border-left-color: var(--rule-kind-ligature); }
@@ -197,57 +199,74 @@ ${themeColorCSS(colors, ":root")}
   text-decoration: underline wavy;
 }
 
+.ot-rule-card-head {
+  display: flex;
+  gap: 0.3em;
+  align-items: center;
+  min-width: 0;
+}
+
 /* Per-rule sample: input on the left, output on the right, SVG so it stays
    crisp and picks up the theme colour via currentColor. */
 
 .ot-rule-sample {
   display: flex;
-  gap: 0.8em;
-  align-items: center;
+  gap: 0.5em;
+  align-items: flex-start;
   flex-wrap: wrap;
-  grid-column: 1 / -1;
+  min-width: 0;
 }
 
 .ot-rule-sample > div {
   display: grid;
   justify-items: center;
-  gap: 0.15em;
+  gap: 0.1em;
+  min-width: 0;
 }
 
 .ot-preview-svg {
   display: flex;
-  gap: 0.15em;
-  align-items: center;
+  gap: 0.1em;
+  align-items: flex-end;
   justify-content: center;
-  /* Give both sides the same footprint so the arrow sits between them. */
-  min-height: 54px;
-  min-width: 150px;
   background-color: var(--preview-background);
   border: 0.5px solid var(--horizontal-rule-color);
   border-radius: 0.3em;
-  padding: 0.15em 0.3em;
+  padding: 0.1em 0.25em;
   color: var(--preview-glyph-fill);
+  /* Height is set on the SVGs by the renderer; this is the fallback. */
+  min-height: 54px;
 }
 
-.ot-preview-svg.ot-preview-multi {
-  min-width: 150px;
+/* The two sides share a baseline: both SVGs have the same height and the
+   same ascender-to-descender viewBox, so glyphs line up across the row. */
+.ot-preview-svg svg {
+  display: block;
+  overflow: visible;
 }
 
 .ot-rule-sample-arrow {
   opacity: 0.5;
   font-size: 1.1em;
+  /* Align the arrow with the glyphs' midline rather than the text below. */
+  align-self: center;
+  padding-bottom: 0.9em;
 }
 
 .ot-rule-sample-text {
   font-size: 1.05em;
   line-height: 1.3;
+  max-width: 10em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ot-rule-sample-label {
   font-size: 0.8em;
   color: var(--muted-foreground-color, #666);
   font-family: monospace;
-  max-width: 12em;
+  max-width: 10em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -270,9 +289,10 @@ ${themeColorCSS(colors, ":root")}
 }
 `);
 
-// The box each preview is drawn into. The input side is wider (it holds a
-// run of glyphs); the output side holds up to four glyphs side by side.
-const SAMPLE_BOX = { width: 150, glyphWidth: 46, height: 54 };
+// The height of each preview box, in px. All previews share this height and
+// the font's ascender-to-descender range, so they render at one scale and sit
+// on a common baseline.
+const SAMPLE_BOX = { height: 54 };
 
 // Collapsed/expanded state per feature tag, kept across re-renders.
 const sectionOpenState = new Map();
@@ -342,6 +362,7 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     // be missing during that first render (and would then be re-rendered by the
     // async call below, duplicating the sections).
     this._glyphInstances = new Map();
+    this._cachedMetrics = null;
     this._shaper = null;
     this._shaperProblem = null;
     this._statusMessage = null;
@@ -593,20 +614,16 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     ]);
 
     const card = html.div({ class: `ot-rule-card k-${info.kind}` }, [
-      html.span({ class: "ot-rule-kind" }, [info.label]),
-      html.div({ class: "ot-rule-glyphs" }, [
-        ...side(inputs),
-        ...(outputs.length
-          ? [html.span({ class: "arrow" }, ["→"]), ...side(outputs)]
-          : []),
-      ]),
-      html.div({ style: "display: flex; gap: 0.3em; align-items: center;" }, [
+      // Row 1: rule kind, lookup name, and the delete button.
+      html.div({ class: "ot-rule-card-head" }, [
+        html.span({ class: "ot-rule-kind" }, [info.label]),
         lookup
           ? html.span(
               { class: "ot-rule-kind", title: `Defined in lookup "${lookup.name}"` },
               ["↳ " + lookup.name]
             )
           : "",
+        html.span({ style: "flex: 1 1 auto;" }, []),
         this.fontController.readOnly
           ? ""
           : html.createDomElement("icon-button", {
@@ -616,6 +633,14 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
               onclick: async () => await this.deleteRule(rule, lookup),
             }),
       ]),
+      // Row 2: the glyph names, as written in the FEA.
+      html.div({ class: "ot-rule-glyphs" }, [
+        ...side(inputs),
+        ...(outputs.length
+          ? [html.span({ class: "arrow" }, ["→"]), ...side(outputs)]
+          : []),
+      ]),
+      // Row 3: the two-sided preview.
       sampleRow,
     ]);
 
@@ -733,6 +758,7 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     if (!sample) {
       return;
     }
+    const metrics = this._previewMetrics();
 
     // Left side: the input as it renders in running text, shaped through
     // HarfBuzz so a ligature shows as the ligature glyph.
@@ -741,15 +767,14 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       this._setSVG(
         inputHolder,
         glyphRunToSVG(glyphs, this._glyphInstances, {
-          unitsPerEm: this.fontController.unitsPerEm,
-          boxWidth: SAMPLE_BOX.width,
+          ...metrics,
           boxHeight: SAMPLE_BOX.height,
           color: "currentColor",
         })
       );
     }
 
-    // Right side: the output glyph on its own, fitted and centred.
+    // Right side: the output glyph(s) on their own, at the same scale.
     const outputNames = (sample.outputGlyphs ?? []).filter((n) =>
       this.fontController.hasGlyph(n)
     );
@@ -758,19 +783,38 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
       const nodes = [];
       for (const name of outputNames.slice(0, 4)) {
         nodes.push(
-          glyphToSVG(name, this._glyphInstances.get(name)?.instance, {
-            upem: this.fontController.unitsPerEm,
-            boxWidth: SAMPLE_BOX.glyphWidth,
+          glyphToSVG(name, this._glyphInstances.get(name), {
+            ...metrics,
             boxHeight: SAMPLE_BOX.height,
             color: "currentColor",
           })
         );
       }
-      this._setSVG(outputHolder, nodes, { class: "ot-preview-multi" });
+      this._setSVG(outputHolder, nodes);
     }
   }
 
-  _setSVG(holder, content, attributes = {}) {
+  /**
+   * The vertical metrics every preview shares, so they all sit on one
+   * baseline and render at one scale. Read from the font when it reports
+   * line metrics, like the glyph cells in the font overview do.
+   */
+  _previewMetrics() {
+    if (!this._cachedMetrics) {
+      const upem = this.fontController.unitsPerEm || 1000;
+      let fontSource = null;
+      try {
+        fontSource = this.fontController.fontSourcesInstancer?.instantiate?.({});
+      } catch (e) {
+        // No font source available; the defaults in getVerticalMetrics apply.
+      }
+      const { ascender, descender } = getVerticalMetrics(upem, fontSource);
+      this._cachedMetrics = { upem, ascender, descender };
+    }
+    return this._cachedMetrics;
+  }
+
+  _setSVG(holder, content) {
     if (!holder?.isConnected) {
       return;
     }
@@ -779,7 +823,6 @@ export class OpenTypeFeaturesPanel extends BaseInfoPanel {
     for (const item of items) {
       holder.appendChild(item);
     }
-    Object.assign(holder.dataset, attributes);
   }
 
   async _ensureInstances(glyphNames) {

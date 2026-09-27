@@ -3,140 +3,142 @@ import * as svg from "@fontra/core/svg-utils.js";
 import { Transform } from "@fontra/core/transform.js";
 
 /**
- * Render a run of shaped glyphs as an inline SVG element.
+ * Render glyph previews for the feature editor, sized the way the font
+ * overview's glyph cells are.
  *
- * The glyphs are laid out on a common baseline, horizontally centred in a
- * fixed box, and flipped into SVG's y-down coordinate space with a transform
- * (the same trick glyph-cell.js uses).
- *
- * @param {Array} glyphs       shaped glyphs: {glyphname, xAdvance, xOffset, yOffset}
- * @param {Map} glyphInstances glyphName -> {instance} with a flattenedPath
- * @param {object} options
- *   fontSize   cap-ish size in px (default 34)
- *   boxWidth   width of the returned SVG in px (default 200)
- *   boxHeight  height of the returned SVG in px (default 56)
- *   color      fill colour for the outlines
- * @returns {SVGElement}
+ * The important detail is that every preview uses the *same vertical box* --
+ * ascender to descender -- so a row of previews shares one baseline and lines
+ * up, no matter how tall or deep an individual glyph is. Horizontally the
+ * viewBox follows the glyph's advance width, exactly like glyph-cell.js does.
+ * A fixed font size would instead make an "f" and an Arabic final form look
+ * unrelated in size.
  */
-export function glyphRunToSVG(glyphs, glyphInstances, options = {}) {
+
+const DEFAULT_ASCENDER = 0.8; // fraction of upem
+const DEFAULT_DESCENDER = -0.2;
+
+function getVerticalMetrics(upem, fontSource) {
+  const ascender =
+    fontSource?.lineMetricsHorizontalLayout?.["ascender"]?.value ??
+    DEFAULT_ASCENDER * upem;
+  const descender =
+    fontSource?.lineMetricsHorizontalLayout?.["descender"]?.value ??
+    DEFAULT_DESCENDER * upem;
+  return { ascender, descender };
+}
+
+/**
+ * The glyph's outline as an SVG path element, in a viewBox that spans the
+ * vertical metrics and exactly as wide as the advance.
+ */
+function glyphPathElement(glyph, instance, metrics) {
+  if (!instance?.flattenedPath) {
+    return null;
+  }
+  const svgPath = new SVGPath2D();
+  instance.flattenedPath.drawToPath2d(svgPath);
+  return svg.path({
+    d: svgPath.getPath(),
+    transform: new Transform(1, 0, 0, -1, 0, 0),
+  });
+}
+
+/**
+ * One side of a rule: a run of glyphs laid out on a shared baseline.
+ *
+ * @param {Array} glyphs       shaped glyphs {glyphname, xAdvance, xOffset, yOffset}
+ * @param {Map}   instances   glyphName -> {instance}
+ * @param {object} options
+ *   upem, ascender, descender, boxHeight (px), color
+ * @returns {SVGElement} width scales with the run; height is fixed
+ */
+export function glyphRunToSVG(glyphs, instances, options = {}) {
   const {
-    fontSize = 34,
-    boxWidth = 200,
-    boxHeight = 56,
+    upem = 1000,
+    ascender = DEFAULT_ASCENDER * upem,
+    descender = DEFAULT_DESCENDER * upem,
+    boxHeight = 60,
     color = "currentColor",
   } = options;
 
-  const upem = options.unitsPerEm || 1000;
-  const scale = fontSize / upem;
+  // The viewBox is in font units, matching glyph-cell.js.
+  const runWidth = Math.max(
+    (glyphs ?? []).reduce((sum, g) => sum + (g.xAdvance || 0), 0),
+    1
+  );
+  // viewBox y: from ascender down to descender, with the y-flip handled by the
+  // path transform, so the box is (descender..ascender) in flipped space.
+  const viewY = -ascender;
+  const viewHeight = Math.max(ascender - descender, 1);
 
-  // Lay the run out: total advance width, and the vertical extent.
-  let advance = 0;
-  for (const glyph of glyphs ?? []) {
-    advance += (glyph.xAdvance || 0) * scale;
-  }
-
-  // Centre horizontally: shift so the run's midpoint lands in the middle of
-  // the box. This is what made the old canvas version look off-centre.
-  const shiftX = (boxWidth - advance) / 2;
-  // Sit the baseline a little above the bottom, leaving room for descenders.
-  const baseline = boxHeight * 0.78;
-
-  const pathElements = [];
+  const children = [];
   let x = 0;
-
   for (const glyph of glyphs ?? []) {
-    const obj = glyphInstances.get(glyph.glyphname);
-    const glyphController = obj?.instance;
-    if (glyphController?.flattenedPath) {
-      const svgPath = new SVGPath2D();
-      glyphController.flattenedPath.drawToPath2d(svgPath);
-
-      // A glyph's path is in font units with y up; the run is laid out in px
-      // with y down, so scale and flip in one transform.
-      const base = new Transform(scale, 0, 0, -scale, shiftX + x, baseline);
-      const transform =
-        glyph.xOffset || glyph.yOffset
-          ? base.transform(
-              new Transform(
-                1,
-                0,
-                0,
-                1,
-                (glyph.xOffset || 0) * scale,
-                -(glyph.yOffset || 0) * scale
-              )
-            )
-          : base;
-
-      pathElements.push(
-        svg.path({
-          d: svgPath.getPath(),
-          transform,
-        })
+    const obj = instances.get(glyph.glyphname);
+    const pathEl = glyphPathElement(glyph, obj?.instance, { ascender, descender });
+    if (pathEl) {
+      // Place the glyph at its pen position, then apply the y-flip.
+      const place = new Transform(
+        1,
+        0,
+        0,
+        1,
+        x + (glyph.xOffset || 0),
+        -(glyph.yOffset || 0)
       );
+      pathEl.setAttribute(
+        "transform",
+        `matrix(${place.xx} ${place.xy} ${place.yx} ${place.yy} ${place.dx} ${place.dy}) matrix(1 0 0 -1 0 0)`
+      );
+      children.push(pathEl);
     }
-    x += (glyph.xAdvance || 0) * scale;
+    x += glyph.xAdvance || 0;
   }
 
   return svg.svg(
     {
-      viewBox: svg.viewBox(0, 0, boxWidth, boxHeight),
-      width: `${boxWidth}px`,
+      viewBox: svg.viewBox(0, viewY, runWidth, viewHeight),
+      // Height is fixed for every preview; width follows the content, so the
+      // aspect ratio is preserved and all previews share a scale.
       height: `${boxHeight}px`,
+      preserveAspectRatio: "xMidYMid meet",
       class: "ot-svg-run",
     },
-    [svg.g({ fill: color }, pathElements)]
+    [svg.g({ fill: color }, children)]
   );
 }
 
 /**
- * A small SVG that shows a single glyph, used as the "output" thumbnail.
- * The glyph is scaled to fit the box and centred both ways.
+ * A single glyph on its own, drawn at the same scale as the run next to it.
+ *
+ * Uses the glyph's own advance width for the viewBox (so a narrow glyph is
+ * not blown up to fill the box) and the same ascender-to-descender height.
  */
-export function glyphToSVG(glyphName, glyphInstance, options = {}) {
+export function glyphToSVG(glyphName, entry, options = {}) {
   const {
-    boxWidth = 60,
-    boxHeight = 56,
-    color = "currentColor",
     upem = 1000,
+    ascender = DEFAULT_ASCENDER * upem,
+    descender = DEFAULT_DESCENDER * upem,
+    boxHeight = 60,
+    color = "currentColor",
   } = options;
 
-  const path = glyphInstance?.flattenedPath;
-  if (!path) {
-    return svg.svg({
-      viewBox: svg.viewBox(0, 0, boxWidth, boxHeight),
-      width: `${boxWidth}px`,
-      height: `${boxHeight}px`,
-    });
-  }
+  const instance = entry?.instance ?? entry;
+  const advance = instance?.xAdvance ?? upem * 0.5;
+  const viewY = -ascender;
+  const viewHeight = Math.max(ascender - descender, 1);
 
-  const bounds = glyphInstance.bounds ?? { xMin: 0, xMax: upem, yMin: 0, yMax: upem };
-  const glyphWidth = Math.max(bounds.xMax - bounds.xMin, 1);
-  const glyphHeight = Math.max(bounds.yMax - bounds.yMin, 1);
-
-  // Fit the glyph into the box, preserving its aspect ratio, then centre.
-  const fit = Math.min((boxWidth * 0.7) / glyphWidth, (boxHeight * 0.7) / glyphHeight);
-  const drawWidth = glyphWidth * fit;
-  const drawHeight = glyphHeight * fit;
-  const offsetX = (boxWidth - drawWidth) / 2 - bounds.xMin * fit;
-  const offsetY = (boxHeight - drawHeight) / 2 + bounds.yMax * fit;
-
-  const svgPath = new SVGPath2D();
-  path.drawToPath2d(svgPath);
+  const pathEl = glyphPathElement(glyphName, instance, { ascender, descender });
 
   return svg.svg(
     {
-      viewBox: svg.viewBox(0, 0, boxWidth, boxHeight),
-      width: `${boxWidth}px`,
+      viewBox: svg.viewBox(0, viewY, Math.max(advance, 1), viewHeight),
       height: `${boxHeight}px`,
+      preserveAspectRatio: "xMidYMid meet",
+      class: "ot-svg-glyph",
     },
-    [
-      svg.g({ fill: color }, [
-        svg.path({
-          d: svgPath.getPath(),
-          transform: new Transform(fit, 0, 0, -fit, offsetX, offsetY),
-        }),
-      ]),
-    ]
+    [svg.g({ fill: color }, pathEl ? [pathEl] : [])]
   );
 }
+
+export { getVerticalMetrics };
