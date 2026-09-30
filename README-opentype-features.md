@@ -7,6 +7,26 @@ Everything else is unchanged: the code, the file formats, the backends. The
 feature editor is an additional panel in the **Font Info** view, next to the
 existing **Feature Code** panel that lets you write FEA by hand.
 
+## Reading features from a .ttf/.otf
+
+Fontra opens `.ttf`/`.otf` files read-only. A compiled font stores its features
+as binary GSUB/GPOS tables, which cannot be shown as text, so this fork recovers
+feature code from them with
+[fontFeatures](https://pypi.org/project/fontFeatures/). The Feature Code panel
+and the Feature Editor then work on a compiled font the same way they work on a
+`.designspace`/`.ufo` project.
+
+The recovered code is a best-effort reconstruction, not the font's original
+source: lookup names come from the binary tables and are often auto-generated,
+and variable feature values are read at their default location. If part of a
+font cannot be read, a warning in the code says which table was dropped rather
+than silently showing incomplete features.
+
+Editing does nothing to the font, because Fontra does not write `.ttf`/`.otf`
+files. This matches the warning Fontra already shows for UFO feature code. To
+keep your edits, save as a `.designspace`/`.ufo` project. Shaping and previews
+are unaffected: they use the font's own binary tables.
+
 ## What it does
 
 The Feature Editor reads the font's existing feature code and presents it as
@@ -86,6 +106,10 @@ npm install
 npm run bundle
 .venv/Scripts/python.exe -m fontra filesystem /path/to/a/folder
 ```
+
+Reading features out of a `.ttf`/`.otf` needs one extra package, which is a
+declared dependency, so `pip install -r requirements.txt` covers it. If you run
+from a checkout without reinstalling, `pip install fontFeatures`.
 
 ## Tests
 
