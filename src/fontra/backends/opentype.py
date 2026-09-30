@@ -36,6 +36,7 @@ from ..core.protocols import ReadableFontBackend
 from ..core.varutils import locationToTuple, unnormalizeLocation, unnormalizeValue
 from .base import ReadableBaseBackend
 from .filewatcher import Change
+from .otfeatures import unparseOpenTypeFeatures
 from .watchable import WatchableBackend
 
 shaperFontTables = {
@@ -233,8 +234,13 @@ class OTFBackend(WatchableBackend, ReadableBaseBackend):
         return {}
 
     async def getFeatures(self) -> OpenTypeFeatures:
-        # TODO: do best effort of reading GSUB/GPOS with fontFeatures
-        return OpenTypeFeatures()
+        return self._getFeaturesSync()
+
+    def _getFeaturesSync(self) -> OpenTypeFeatures:
+        featuresText = unparseOpenTypeFeatures(self.font)
+        if not featuresText:
+            return OpenTypeFeatures()
+        return OpenTypeFeatures(language="fea", text=featuresText)
 
     async def getCustomData(self) -> dict[str, Any]:
         return {}
